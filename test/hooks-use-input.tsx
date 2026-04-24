@@ -1,4 +1,8 @@
 import test from 'ava';
+import React, {memo, useCallback, useLayoutEffect, useState} from 'react';
+import {render, Text, useInput} from '../src/index.js';
+import {createStdin, emitReadable} from './helpers/create-stdin.js';
+import createStdout from './helpers/create-stdout.js';
 import term from './helpers/term.js';
 
 test.serial(
@@ -35,28 +39,59 @@ test.serial(
 	},
 );
 
-test.serial(
-	'useInput - memoized child handler receives latest props',
-	async t => {
-		const ps = term('use-input-memo-stale');
-		const delay = async (ms: number) =>
-			new Promise(resolve => {
-				setTimeout(resolve, ms);
+test('useInput - keeps handler current in memoized child', async t => {
+	const stdin = createStdin();
+	const stdout = createStdout();
+	const delay = async (ms: number) =>
+		new Promise(resolve => {
+			setTimeout(resolve, ms);
+		});
+
+	let latestValue = '';
+	const MemoChild = memo(
+		({
+			value,
+			onChange,
+		}: {
+			readonly value: string;
+			readonly onChange: (value: string) => void;
+		}) => {
+			useInput(input => {
+				onChange(value + input);
 			});
 
-		ps.write('/');
-		await delay(100);
-		ps.write('r');
-		await delay(100);
-		ps.write('e');
-		await delay(100);
-		ps.write('s');
-		await delay(100);
-		ps.write('\r');
-		await ps.waitForExit();
-		t.true(ps.output.includes('FINAL value:"/res" stale:false'));
-	},
-);
+			return <Text>{value}</Text>;
+		},
+	);
+
+	function App() {
+		const [value, setValue] = useState('');
+
+		useLayoutEffect(() => {
+			latestValue = value;
+		});
+
+		const onChange = useCallback((nextValue: string) => {
+			setValue(nextValue);
+		}, []);
+
+		return <MemoChild value={value} onChange={onChange} />;
+	}
+
+	const {unmount} = render(<App />, {stdin, stdout});
+
+	emitReadable(stdin, '/');
+	await delay(100);
+	emitReadable(stdin, 'r');
+	await delay(100);
+	emitReadable(stdin, 'e');
+	await delay(100);
+	emitReadable(stdin, 's');
+	await delay(100);
+
+	t.is(latestValue, '/res');
+	unmount();
+});
 
 test.serial('useInput - handle lowercase character', async t => {
 	const ps = term('use-input', ['lowercase']);
