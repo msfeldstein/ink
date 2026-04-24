@@ -45,7 +45,7 @@ const renderer = (node: DOMElement, isScreenReaderEnabled: boolean): Result => {
 
 		let staticOutput;
 
-		if (node.staticNode?.yogaNode) {
+		if (node.staticNode?.yogaNode && node.staticNode.childNodes.length > 0) {
 			staticOutput = new Output({
 				width: node.staticNode.yogaNode.getComputedWidth(),
 				height: node.staticNode.yogaNode.getComputedHeight(),
