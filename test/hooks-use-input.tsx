@@ -35,6 +35,29 @@ test.serial(
 	},
 );
 
+test.serial(
+	'useInput - memoized child handler receives latest props',
+	async t => {
+		const ps = term('use-input-memo-stale');
+		const delay = async (ms: number) =>
+			new Promise(resolve => {
+				setTimeout(resolve, ms);
+			});
+
+		ps.write('/');
+		await delay(100);
+		ps.write('r');
+		await delay(100);
+		ps.write('e');
+		await delay(100);
+		ps.write('s');
+		await delay(100);
+		ps.write('\r');
+		await ps.waitForExit();
+		t.true(ps.output.includes('FINAL value:"/res" stale:false'));
+	},
+);
+
 test.serial('useInput - handle lowercase character', async t => {
 	const ps = term('use-input', ['lowercase']);
 	ps.write('q');
