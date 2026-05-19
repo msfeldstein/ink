@@ -97,6 +97,23 @@ test('wrap text', t => {
 	t.is(output, 'Hello\nWorld');
 });
 
+test('wrap text without leading spaces on wrapped lines', t => {
+	const output = renderToString(
+		<Box width={51}>
+			<Text wrap="wrap">
+				{
+					'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.'
+				}
+			</Text>
+		</Box>,
+	);
+
+	t.is(
+		output,
+		'Lorem ipsum dolor sit amet, consectetur adipiscing\nelit, sed do eiusmod tempor incididunt ut labore et\ndolore magna aliqua.',
+	);
+});
+
 test('don’t wrap text if there is enough space', t => {
 	const output = renderToString(
 		<Box width={20}>

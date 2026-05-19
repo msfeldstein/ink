@@ -3114,6 +3114,7 @@ npm run example examples/[example name]
 - [Counter](examples/counter/counter.tsx) - A simple counter that increments every 100ms.
 - [Form with validation](https://github.com/final-form/rff-cli-example) - Manage form state using [Final Form](https://github.com/final-form/final-form#-final-form).
 - [Borders](examples/borders/borders.tsx) - Add borders to the `<Box>` component.
+- [Wrapping text](examples/wrapping-text/wrapping-text.tsx) - Render one long paragraph that wraps across multiple lines.
 - [Suspense](examples/suspense/suspense.tsx) - Use React Suspense.
 - [Table](examples/table/table.tsx) - Renders a table with multiple columns and rows.
 - [Focus management](examples/use-focus/use-focus.tsx) - Use the `useFocus` hook to manage focus between components.

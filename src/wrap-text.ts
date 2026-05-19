@@ -20,7 +20,7 @@ const wrapText = (
 
 	if (wrapType === 'wrap') {
 		wrappedText = wrapAnsi(text, maxWidth, {
-			trim: false,
+			trim: true,
 			hard: true,
 		});
 	}
