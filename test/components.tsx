@@ -1709,6 +1709,66 @@ test('alternate screen - content is rendered between enter and exit', async t =>
 	);
 });
 
+test('alternate screen - plain links are wrapped with OSC hyperlinks', async t => {
+	const stdout = createStdout(100, true);
+	const url = 'https://example.com/docs';
+
+	const {unmount, waitUntilExit} = render(<Text>Visit {url}.</Text>, {
+		stdout,
+		alternateScreen: true,
+		interactive: true,
+	});
+
+	unmount();
+	await waitUntilExit();
+
+	const output = stdout.getWrites().join('');
+
+	t.true(output.includes(ansiEscapes.link(url, url) + '.'));
+	t.true(stripAnsi(output).includes(`Visit ${url}.`));
+});
+
+test('primary screen - plain links are left for terminal auto-detection', async t => {
+	const stdout = createStdout(100, true);
+	const url = 'https://example.com/docs';
+
+	const {unmount, waitUntilExit} = render(<Text>Visit {url}</Text>, {
+		stdout,
+		interactive: true,
+	});
+
+	unmount();
+	await waitUntilExit();
+
+	const output = stdout.getWrites().join('');
+
+	t.false(output.includes(ansiEscapes.link(url, url)));
+	t.true(output.includes(url));
+});
+
+test('alternate screen - explicit OSC hyperlinks are not nested', async t => {
+	const stdout = createStdout(100, true);
+	const url = 'https://example.com';
+
+	const {unmount, waitUntilExit} = render(
+		<Text>{ansiEscapes.link(url, url)}</Text>,
+		{
+			stdout,
+			alternateScreen: true,
+			interactive: true,
+		},
+	);
+
+	unmount();
+	await waitUntilExit();
+
+	const output = stdout.getWrites().join('');
+	const hyperlinkStart = `\u001B]8;;${url}\u0007`;
+	const hyperlinkStartCount = output.split(hyperlinkStart).length - 1;
+
+	t.is(hyperlinkStartCount, 1);
+});
+
 test('alternate screen - ignored when isTTY is false', async t => {
 	const stdout = createStdout(100, false);
 

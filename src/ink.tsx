@@ -19,6 +19,7 @@ import logUpdate, {type LogUpdate, type CursorPosition} from './log-update.js';
 import {bsu, esu, shouldSynchronize} from './write-synchronized.js';
 import instances from './instances.js';
 import App from './components/App.js';
+import linkifyUrls from './linkify-urls.js';
 import {accessibilityContext as AccessibilityContext} from './components/AccessibilityContext.js';
 import {
 	type KittyKeyboardOptions,
@@ -503,7 +504,10 @@ export default class Ink {
 		// Clear() resets log-update's cursor state, so replay the latest cursor intent
 		// before restoring output after external stdout/stderr writes.
 		this.log.setCursorPosition(this.cursorPosition);
-		this.log(this.lastOutputToRender || this.lastOutput + '\n');
+		this.log(
+			this.lastOutputToRender ||
+				this.formatAlternateScreenLinks(this.lastOutput + '\n'),
+		);
 	};
 
 	calculateLayout = () => {
@@ -554,7 +558,9 @@ export default class Ink {
 			this.lastOutput = output;
 			this.lastOutputToRender = output;
 			this.lastOutputHeight = outputHeight;
-			this.options.stdout.write(this.fullStaticOutput + output);
+			this.options.stdout.write(
+				this.formatAlternateScreenLinks(this.fullStaticOutput + output),
+			);
 			return;
 		}
 
@@ -581,7 +587,9 @@ export default class Ink {
 					this.lastOutputHeight > 0
 						? ansiEscapes.eraseLines(this.lastOutputHeight)
 						: '';
-				this.options.stdout.write(erase + staticOutput);
+				this.options.stdout.write(
+					erase + this.formatAlternateScreenLinks(staticOutput),
+				);
 				// After erasing, the last output is gone, so we should reset its height
 				this.lastOutputHeight = 0;
 			}
@@ -600,20 +608,21 @@ export default class Ink {
 				trim: false,
 				hard: true,
 			});
+			const outputToRender = this.formatAlternateScreenLinks(wrappedOutput);
 
 			// If we haven't erased yet, do it now.
 			if (hasStaticOutput) {
-				this.options.stdout.write(wrappedOutput);
+				this.options.stdout.write(outputToRender);
 			} else {
 				const erase =
 					this.lastOutputHeight > 0
 						? ansiEscapes.eraseLines(this.lastOutputHeight)
 						: '';
-				this.options.stdout.write(erase + wrappedOutput);
+				this.options.stdout.write(erase + outputToRender);
 			}
 
 			this.lastOutput = output;
-			this.lastOutputToRender = wrappedOutput;
+			this.lastOutputToRender = outputToRender;
 			this.lastOutputHeight =
 				wrappedOutput === '' ? 0 : wrappedOutput.split('\n').length;
 
@@ -936,7 +945,10 @@ export default class Ink {
 			this.log.clear();
 			// Sync lastOutput so that unmount's final onRender
 			// sees it as unchanged and log-update skips it
-			this.log.sync(this.lastOutputToRender || this.lastOutput + '\n');
+			this.log.sync(
+				this.lastOutputToRender ||
+					this.formatAlternateScreenLinks(this.lastOutput + '\n'),
+			);
 		}
 	}
 
@@ -1001,6 +1013,10 @@ export default class Ink {
 		} catch {}
 	}
 
+	private formatAlternateScreenLinks(output: string): string {
+		return this.alternateScreen ? linkifyUrls(output) : output;
+	}
+
 	// Waits for the exit promise to settle, suppressing any rejection.
 	// Errors are surfaced via waitUntilExit() instead.
 	private async awaitExit(): Promise<void> {
@@ -1046,6 +1062,9 @@ export default class Ink {
 		const viewportRows = isTty ? getWindowSize(this.options.stdout).rows : 24;
 		const isFullscreen = isTty && outputHeight >= viewportRows;
 		const outputToRender = isFullscreen ? output : output + '\n';
+		const outputWithLinks = this.formatAlternateScreenLinks(output);
+		const outputToRenderWithLinks =
+			this.formatAlternateScreenLinks(outputToRender);
 
 		const shouldClearTerminal = shouldClearTerminalForFrame({
 			isTty,
@@ -1062,12 +1081,14 @@ export default class Ink {
 			}
 
 			this.options.stdout.write(
-				ansiEscapes.clearTerminal + this.fullStaticOutput + output,
+				ansiEscapes.clearTerminal +
+					this.formatAlternateScreenLinks(this.fullStaticOutput) +
+					outputWithLinks,
 			);
 			this.lastOutput = output;
-			this.lastOutputToRender = outputToRender;
+			this.lastOutputToRender = outputToRenderWithLinks;
 			this.lastOutputHeight = outputHeight;
-			this.log.sync(outputToRender);
+			this.log.sync(outputToRenderWithLinks);
 
 			if (sync) {
 				this.options.stdout.write(esu);
@@ -1084,19 +1105,19 @@ export default class Ink {
 			}
 
 			this.log.clear();
-			this.options.stdout.write(staticOutput);
-			this.log(outputToRender);
+			this.options.stdout.write(this.formatAlternateScreenLinks(staticOutput));
+			this.log(outputToRenderWithLinks);
 
 			if (sync) {
 				this.options.stdout.write(esu);
 			}
 		} else if (output !== this.lastOutput || this.log.isCursorDirty()) {
 			// ThrottledLog manages its own bsu/esu at actual write time
-			this.throttledLog(outputToRender);
+			this.throttledLog(outputToRenderWithLinks);
 		}
 
 		this.lastOutput = output;
-		this.lastOutputToRender = outputToRender;
+		this.lastOutputToRender = outputToRenderWithLinks;
 		this.lastOutputHeight = outputHeight;
 	}
 
