@@ -683,7 +683,11 @@ export default class Ink {
 		}
 
 		if (this.options.debug) {
-			this.options.stdout.write(data + this.fullStaticOutput + this.lastOutput);
+			this.options.stdout.write(
+				this.formatAlternateScreenLinks(
+					data + this.fullStaticOutput + this.lastOutput,
+				),
+			);
 			return;
 		}
 
@@ -698,7 +702,7 @@ export default class Ink {
 		}
 
 		this.log.clear();
-		this.options.stdout.write(data);
+		this.options.stdout.write(this.formatAlternateScreenLinks(data));
 		this.restoreLastOutput();
 
 		if (sync) {
@@ -713,7 +717,11 @@ export default class Ink {
 
 		if (this.options.debug) {
 			this.options.stderr.write(data);
-			this.options.stdout.write(this.fullStaticOutput + this.lastOutput);
+			this.options.stdout.write(
+				this.formatAlternateScreenLinks(
+					this.fullStaticOutput + this.lastOutput,
+				),
+			);
 			return;
 		}
 
