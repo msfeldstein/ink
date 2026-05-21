@@ -2,12 +2,19 @@ import process from 'node:process';
 import React, {useEffect, useState} from 'react';
 import {Box, Text, render} from '../../src/index.js';
 
-// Force a narrow terminal so the first frame wraps in a predictable way.
-// Before the incremental rendering wrapped-line fix, switching to "short"
-// left the old "0123456789" physical row behind.
-process.stdout.columns = 10;
+const actualColumns = process.stdout.columns ?? 80;
 
-const frames = ['0123456789abc', 'short'] as const;
+// Make Ink lay out this app as a single very wide line. The real terminal is
+// still narrower, so wrapping happens in the terminal after log-update has
+// counted the frame as one logical line.
+process.stdout.columns = 1000;
+
+const longLine = Array.from(
+	{length: 24},
+	(_, index) => `STALE-${String(index).padStart(2, '0')}`,
+).join('-');
+
+const frames = [longLine, 'short'] as const;
 
 function IncrementalStaleLines() {
 	const [frame, setFrame] = useState(0);
@@ -26,7 +33,11 @@ function IncrementalStaleLines() {
 		<Box flexDirection="column">
 			<Text>{frames[frame]}</Text>
 			<Text>bottom</Text>
-			<Text>Ctrl+C</Text>
+			<Text dimColor>
+				actual terminal columns: {actualColumns}; Ink layout columns:{' '}
+				{process.stdout.columns}
+			</Text>
+			<Text dimColor>Ctrl+C</Text>
 		</Box>
 	);
 }
