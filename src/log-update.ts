@@ -1,6 +1,7 @@
 import {type Writable} from 'node:stream';
 import ansiEscapes from 'ansi-escapes';
 import cliCursor from 'cli-cursor';
+import wrapAnsi from 'wrap-ansi';
 import {
 	type CursorPosition,
 	cursorPositionChanged,
@@ -27,6 +28,19 @@ export type LogUpdate = {
 // that `split('\n')` produces when the string ends with '\n'.
 const visibleLineCount = (lines: string[], str: string): number =>
 	str.endsWith('\n') ? lines.length - 1 : lines.length;
+
+const wrapOutput = (stream: Writable, output: string): string => {
+	const {columns} = stream as Writable & {columns?: number};
+
+	if (columns === undefined || columns <= 0) {
+		return output;
+	}
+
+	return wrapAnsi(output, columns, {
+		trim: false,
+		hard: true,
+	});
+};
 
 const createStandard = (
 	stream: Writable,
@@ -184,6 +198,7 @@ const createIncremental = (
 	let cursorWasShown = false;
 
 	const getActiveCursor = () => (cursorDirty ? cursorPosition : undefined);
+	const getRenderOutput = (str: string) => wrapOutput(stream, str);
 	const hasChanges = (
 		str: string,
 		activeCursor: CursorPosition | undefined,
@@ -205,20 +220,21 @@ const createIncremental = (
 		// This ensures stale positions don't persist after component unmount.
 		const activeCursor = getActiveCursor();
 		cursorDirty = false;
+		const output = getRenderOutput(str);
 		const cursorChanged = cursorPositionChanged(
 			activeCursor,
 			previousCursorPosition,
 		);
 
-		if (!hasChanges(str, activeCursor)) {
+		if (!hasChanges(output, activeCursor)) {
 			return false;
 		}
 
-		const nextLines = str.split('\n');
-		const visibleCount = visibleLineCount(nextLines, str);
+		const nextLines = output.split('\n');
+		const visibleCount = visibleLineCount(nextLines, output);
 		const previousVisible = visibleLineCount(previousLines, previousOutput);
 
-		if (str === previousOutput && cursorChanged) {
+		if (output === previousOutput && cursorChanged) {
 			stream.write(
 				buildCursorOnlySequence({
 					cursorWasShown,
@@ -239,22 +255,22 @@ const createIncremental = (
 			previousCursorPosition,
 		);
 
-		if (str === '\n' || previousOutput.length === 0) {
+		if (output === '\n' || previousOutput.length === 0) {
 			const cursorSuffix = buildCursorSuffix(visibleCount, activeCursor);
 			stream.write(
 				returnPrefix +
 					ansiEscapes.eraseLines(previousLines.length) +
-					str +
+					output +
 					cursorSuffix,
 			);
 			cursorWasShown = activeCursor !== undefined;
 			previousCursorPosition = activeCursor ? {...activeCursor} : undefined;
-			previousOutput = str;
+			previousOutput = output;
 			previousLines = nextLines;
 			return true;
 		}
 
-		const hasTrailingNewline = str.endsWith('\n');
+		const hasTrailingNewline = output.endsWith('\n');
 
 		// We aggregate all chunks for incremental rendering into a buffer, and then write them to stdout at the end.
 		const buffer: string[] = [];
@@ -304,7 +320,7 @@ const createIncremental = (
 
 		cursorWasShown = activeCursor !== undefined;
 		previousCursorPosition = activeCursor ? {...activeCursor} : undefined;
-		previousOutput = str;
+		previousOutput = output;
 		previousLines = nextLines;
 		return true;
 	};
@@ -345,8 +361,9 @@ const createIncremental = (
 		const activeCursor = cursorDirty ? cursorPosition : undefined;
 		cursorDirty = false;
 
-		const lines = str.split('\n');
-		previousOutput = str;
+		const output = getRenderOutput(str);
+		const lines = output.split('\n');
+		previousOutput = output;
 		previousLines = lines;
 
 		if (!activeCursor && cursorWasShown) {
@@ -355,7 +372,7 @@ const createIncremental = (
 
 		if (activeCursor) {
 			stream.write(
-				buildCursorSuffix(visibleLineCount(lines, str), activeCursor),
+				buildCursorSuffix(visibleLineCount(lines, output), activeCursor),
 			);
 		}
 
@@ -369,7 +386,8 @@ const createIncremental = (
 	};
 
 	render.isCursorDirty = () => cursorDirty;
-	render.willRender = (str: string) => hasChanges(str, getActiveCursor());
+	render.willRender = (str: string) =>
+		hasChanges(getRenderOutput(str), getActiveCursor());
 
 	return render;
 };

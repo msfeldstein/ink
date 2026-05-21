@@ -3,6 +3,113 @@ import ansiEscapes from 'ansi-escapes';
 import logUpdate from '../src/log-update.js';
 import createStdout from './helpers/create-stdout.js';
 
+const renderTerminalRows = (
+	writes: string[],
+	{columns, rows}: {columns: number; rows: number},
+) => {
+	const createRow = () => Array.from({length: columns}, () => ' ');
+	const screen = Array.from({length: rows}, createRow);
+	let x = 0;
+	let y = 0;
+	let pendingWrap = false;
+
+	const ensureRow = () => {
+		while (y >= screen.length) {
+			screen.push(createRow());
+		}
+	};
+
+	const writeCharacter = (character: string) => {
+		if (pendingWrap) {
+			y++;
+			x = 0;
+			pendingWrap = false;
+		}
+
+		ensureRow();
+		screen[y]![x] = character;
+
+		if (x === columns - 1) {
+			pendingWrap = true;
+		} else {
+			x++;
+		}
+	};
+
+	const eraseEndLine = () => {
+		ensureRow();
+
+		for (let column = x; column < columns; column++) {
+			screen[y]![column] = ' ';
+		}
+	};
+
+	const parseControlSequence = (chunk: string, start: number) => {
+		let end = start + 2;
+
+		while (end < chunk.length && !/[A-Za-z]/.test(chunk[end]!)) {
+			end++;
+		}
+
+		const final = chunk[end];
+		const parameters = chunk.slice(start + 2, end);
+		const value = Number(parameters) || 1;
+
+		if (final === 'A') {
+			y = Math.max(0, y - value);
+			pendingWrap = false;
+		}
+
+		if (final === 'B') {
+			y += value;
+			ensureRow();
+			pendingWrap = false;
+		}
+
+		if (final === 'E') {
+			y += value;
+			x = 0;
+			ensureRow();
+			pendingWrap = false;
+		}
+
+		if (final === 'G') {
+			x = Math.min(columns - 1, Math.max(0, value - 1));
+			pendingWrap = false;
+		}
+
+		if (final === 'K') {
+			eraseEndLine();
+			pendingWrap = false;
+		}
+
+		return end;
+	};
+
+	for (const chunk of writes) {
+		for (let index = 0; index < chunk.length; index++) {
+			const character = chunk[index]!;
+
+			if (character === '\u001B' && chunk[index + 1] === '[') {
+				index = parseControlSequence(chunk, index);
+				continue;
+			}
+
+			if (character === '\n') {
+				y++;
+				x = 0;
+				pendingWrap = false;
+				ensureRow();
+				continue;
+			}
+
+			writeCharacter(character);
+		}
+	}
+
+	return screen.map(row => row.join('').trimEnd());
+};
+
 test('standard rendering - renders and updates output', t => {
 	const stdout = createStdout();
 	const render = logUpdate.create(stdout, {showCursor: true});
@@ -234,6 +341,21 @@ test('incremental rendering - sync() followed by update (assert incremental path
 	t.true(firstCall.includes('Updated')); // Only updates changed line
 	t.false(firstCall.includes('Line 1')); // Doesn't rewrite unchanged
 	t.false(firstCall.includes('Line 3')); // Doesn't rewrite unchanged
+});
+
+test('incremental rendering - clears stale physical rows after wrapped lines shrink', t => {
+	const stdout = createStdout(10);
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
+
+	render('0123456789abc\nbottom\n');
+	render('short\nbottom\n');
+
+	const rows = renderTerminalRows(stdout.getWrites(), {columns: 10, rows: 4});
+
+	t.deepEqual(rows, ['short', 'bottom', '', '']);
 });
 
 // Cursor positioning tests
