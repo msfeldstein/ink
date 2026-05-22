@@ -10,6 +10,7 @@ import {
 	buildReturnToBottomPrefix,
 	hideCursorEscape,
 } from './cursor-helpers.js';
+import {getWindowSize} from './utils.js';
 
 export type {CursorPosition} from './cursor-helpers.js';
 
@@ -30,9 +31,9 @@ const visibleLineCount = (lines: string[], str: string): number =>
 	str.endsWith('\n') ? lines.length - 1 : lines.length;
 
 const wrapOutput = (stream: Writable, output: string): string => {
-	const {columns} = stream as Writable & {columns?: number};
+	const {columns} = getWindowSize(stream as NodeJS.WriteStream);
 
-	if (columns === undefined || columns <= 0) {
+	if (columns <= 0) {
 		return output;
 	}
 

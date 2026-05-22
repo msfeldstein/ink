@@ -34,7 +34,7 @@ function IncrementalStaleLines() {
 			<Text>{frames[frame]}</Text>
 			<Text>bottom</Text>
 			<Text dimColor>
-				actual terminal columns: {actualColumns}; Ink layout columns:{' '}
+				actual terminal columns: {actualColumns}; stdout.columns override:{' '}
 				{process.stdout.columns}
 			</Text>
 			<Text dimColor>Ctrl+C</Text>
