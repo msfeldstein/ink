@@ -162,7 +162,14 @@ export default createReconciler<
 			rootNode.onComputeLayout();
 		}
 
-		emitLayoutListeners(rootNode);
+		// Defer out of React's commit stack: running layout listeners
+		// synchronously here lets hooks (e.g. useBoxMetrics) schedule React state
+		// while React is still committing, which recurses until React trips its
+		// nested update guard and crashes the CLI. The resize handler emits
+		// synchronously since it runs outside the commit.
+		queueMicrotask(() => {
+			emitLayoutListeners(rootNode);
+		});
 
 		/*
 		Fire `onStaticChange` BEFORE `onImmediateRender` so ink resets accumulated static output before the new instance emits. Without this, items from a replaced/removed <Static> stay in `fullStaticOutput` and get replayed on rewrites.
