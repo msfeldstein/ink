@@ -6,7 +6,7 @@ export type PublicProps = {
 	/**
 	The stdin stream passed to `render()` in `options.stdin`, or `process.stdin` by default. Useful if your app needs to handle user input.
 	*/
-	readonly stdin: NodeJS.ReadStream;
+	readonly stdin: NodeJS.ReadableStream;
 
 	/**
 	Ink exposes this function via own `<StdinContext>` to be able to handle Ctrl+C, that's why you should use Ink's `setRawMode` instead of `process.stdin.setRawMode`. If the `stdin` stream passed to Ink does not support setRawMode, this function does nothing.

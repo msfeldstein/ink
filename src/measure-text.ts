@@ -1,6 +1,7 @@
 import widestLine from 'widest-line';
+import QuickLRU from 'quick-lru';
 
-const cache = new Map<string, Output>();
+const cache = new QuickLRU<string, Output>({maxSize: 4096});
 
 type Output = {
 	width: number;

@@ -31,7 +31,9 @@ test('catch and display error', t => {
 		.map((c: any) => c.args[0] as string)
 		.filter(
 			(w: string) =>
-				!w.startsWith('\u001B[?25') && !w.startsWith('\u001B[?2026'),
+				w.length > 0 &&
+				!w.startsWith('\u001B[?25') &&
+				!w.startsWith('\u001B[?2026'),
 		);
 	const lastContentWrite = writes.at(-1)!;
 
@@ -109,7 +111,9 @@ test('ErrorBoundary catches and displays nested component errors', t => {
 		.map((c: any) => c.args[0] as string)
 		.filter(
 			(w: string) =>
-				!w.startsWith('\u001B[?25') && !w.startsWith('\u001B[?2026'),
+				w.length > 0 &&
+				!w.startsWith('\u001B[?25') &&
+				!w.startsWith('\u001B[?2026'),
 		);
 	const lastContentWrite = writes.at(-1)!;
 	const output = stripAnsi(lastContentWrite);

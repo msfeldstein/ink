@@ -41,6 +41,17 @@ test('returns cached result on repeated calls', t => {
 	t.is(first, second);
 });
 
+test('evicts old cached results', t => {
+	const first = measureText('eviction-test-first');
+
+	for (let index = 0; index < 8192; index++) {
+		measureText(`eviction-test-${index}`);
+	}
+
+	const second = measureText('eviction-test-first');
+	t.not(first, second);
+});
+
 test('measure text with ANSI escape sequences', t => {
 	const result = measureText('\u001B[31mred\u001B[0m');
 	t.is(result.width, 3);

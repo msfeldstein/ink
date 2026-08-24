@@ -7,11 +7,13 @@ import React, {
 	useCallback,
 	useMemo,
 	useEffect,
+	useInsertionEffect,
 } from 'react';
 import cliCursor from 'cli-cursor';
 import {type CursorPosition} from '../log-update.js';
 import {createInputParser} from '../input-parser.js';
-import AppContext from './AppContext.js';
+import {getRawModeStream, type OutputStream} from '../stream.js';
+import AppContext, {type SuspendTerminal} from './AppContext.js';
 import StdinContext from './StdinContext.js';
 import StdoutContext from './StdoutContext.js';
 import StderrContext from './StderrContext.js';
@@ -33,14 +35,19 @@ type AnimationSubscriber = {
 
 type Props = {
 	readonly children: ReactNode;
-	readonly stdin: NodeJS.ReadStream;
-	readonly stdout: NodeJS.WriteStream;
-	readonly stderr: NodeJS.WriteStream;
+	readonly stdin: NodeJS.ReadableStream;
+	readonly stdout: OutputStream;
+	readonly stderr: OutputStream;
 	readonly writeToStdout: (data: string) => void;
 	readonly writeToStderr: (data: string) => void;
 	readonly exitOnCtrlC: boolean;
 	readonly onExit: (errorOrResult?: unknown) => void;
 	readonly onWaitUntilRenderFlush: () => Promise<void>;
+	readonly onSuspendTerminal: SuspendTerminal;
+	readonly onRegisterInputControl: (
+		pauseInput: () => void,
+		resumeInput: () => void,
+	) => void;
 	readonly setCursorPosition: (position: CursorPosition | undefined) => void;
 	readonly interactive: boolean;
 	readonly renderThrottleMs: number;
@@ -64,6 +71,8 @@ function App({
 	exitOnCtrlC,
 	onExit,
 	onWaitUntilRenderFlush,
+	onSuspendTerminal,
+	onRegisterInputControl,
 	setCursorPosition,
 	interactive,
 	renderThrottleMs,
@@ -197,8 +206,8 @@ function App({
 		};
 	}, [clearAnimationTimer]);
 
-	// Determines if TTY is supported on the provided stdin
-	const isRawModeSupported = stdin.isTTY;
+	const rawModeStdin = getRawModeStream(stdin);
+	const isRawModeSupported = rawModeStdin !== undefined;
 
 	const detachReadableListener = useCallback((): void => {
 		if (!readableListenerRef.current) {
@@ -216,12 +225,16 @@ function App({
 	}, [clearPendingInputFlush, detachReadableListener]);
 
 	const disableRawMode = useCallback((): void => {
+		if (!rawModeStdin) {
+			return;
+		}
+
 		pendingDisableRawModeRef.current = false;
-		stdin.setRawMode(false);
-		stdin.unref();
+		rawModeStdin.setRawMode(false);
+		rawModeStdin.unref?.();
 		rawModeEnabledCount.current = 0;
 		clearInputState();
-	}, [stdin, clearInputState]);
+	}, [rawModeStdin, clearInputState]);
 
 	const handleExit = useCallback(
 		(errorOrResult?: unknown): void => {
@@ -314,7 +327,7 @@ function App({
 
 	const handleSetRawMode = useCallback(
 		(isEnabled: boolean): void => {
-			if (!isRawModeSupported) {
+			if (!rawModeStdin) {
 				if (stdin === process.stdin) {
 					throw new Error(
 						'Raw mode is not supported on the current process.stdin, which Ink uses as input stream by default.\nRead about how to prevent this error on https://github.com/vadimdemedes/ink/#israwmodesupported',
@@ -326,7 +339,7 @@ function App({
 				}
 			}
 
-			stdin.setEncoding('utf8');
+			rawModeStdin.setEncoding('utf8');
 
 			if (isEnabled) {
 				if (rawModeEnabledCount.current === 0) {
@@ -336,8 +349,8 @@ function App({
 					pendingDisableRawModeRef.current = false;
 
 					if (!isRawModeAlreadyEnabled) {
-						stdin.ref();
-						stdin.setRawMode(true);
+						rawModeStdin.ref?.();
+						rawModeStdin.setRawMode(true);
 					}
 
 					attachReadableListener();
@@ -369,7 +382,7 @@ function App({
 			}
 		},
 		[
-			isRawModeSupported,
+			rawModeStdin,
 			stdin,
 			attachReadableListener,
 			clearInputState,
@@ -402,6 +415,60 @@ function App({
 		},
 		[stdout],
 	);
+
+	// Remembers which input modes were active so resumeInput can reinstate exactly
+	// those after a terminal suspension, without touching the ref counts (the React
+	// components still "own" raw mode/bracketed paste across the suspension).
+	const suspendedInputStateRef = useRef({
+		rawMode: false,
+		bracketedPaste: false,
+	});
+
+	const pauseInput = useCallback((): void => {
+		const wasRawMode = isRawModeSupported && rawModeEnabledCount.current > 0;
+		const wasBracketedPaste = bracketedPasteModeEnabledCount.current > 0;
+		suspendedInputStateRef.current = {
+			rawMode: wasRawMode,
+			bracketedPaste: wasBracketedPaste,
+		};
+
+		if (wasBracketedPaste && stdout.isTTY) {
+			try {
+				stdout.write('\u001B[?2004l');
+			} catch {}
+		}
+
+		if (wasRawMode) {
+			rawModeStdin?.setRawMode(false);
+			rawModeStdin?.unref?.();
+			clearInputState();
+		}
+	}, [isRawModeSupported, rawModeStdin, stdout, clearInputState]);
+
+	const resumeInput = useCallback((): void => {
+		const {rawMode, bracketedPaste} = suspendedInputStateRef.current;
+
+		if (rawMode) {
+			rawModeStdin?.setEncoding('utf8');
+			rawModeStdin?.ref?.();
+			rawModeStdin?.setRawMode(true);
+			attachReadableListener();
+		}
+
+		if (bracketedPaste && stdout.isTTY) {
+			try {
+				stdout.write('\u001B[?2004h');
+			} catch {}
+		}
+	}, [rawModeStdin, stdout, attachReadableListener]);
+
+	// Register input pause/resume in an insertion effect: it runs before every
+	// passive effect (parent and child), so a child that calls suspendTerminal()
+	// from its own effect always finds the input control already registered. A
+	// normal effect would run too late (child effects fire before the parent's).
+	useInsertionEffect(() => {
+		onRegisterInputControl(pauseInput, resumeInput);
+	}, [onRegisterInputControl, pauseInput, resumeInput]);
 
 	// Focus navigation helpers
 	const findNextFocusable = useCallback(
@@ -645,8 +712,9 @@ function App({
 		() => ({
 			exit: handleExit,
 			waitUntilRenderFlush: onWaitUntilRenderFlush,
+			suspendTerminal: onSuspendTerminal,
 		}),
-		[handleExit, onWaitUntilRenderFlush],
+		[handleExit, onWaitUntilRenderFlush, onSuspendTerminal],
 	);
 
 	const stdinContextValue = useMemo(

@@ -1,4 +1,3 @@
-import {type Writable} from 'node:stream';
 import ansiEscapes from 'ansi-escapes';
 import cliCursor from 'cli-cursor';
 import {
@@ -29,7 +28,7 @@ const visibleLineCount = (lines: string[], str: string): number =>
 	str.endsWith('\n') ? lines.length - 1 : lines.length;
 
 const createStandard = (
-	stream: Writable,
+	stream: NodeJS.WritableStream,
 	{showCursor = false} = {},
 ): LogUpdate => {
 	let previousLineCount = 0;
@@ -72,8 +71,7 @@ const createStandard = (
 		}
 
 		const lines = str.split('\n');
-		const visibleCount = visibleLineCount(lines, str);
-		const cursorSuffix = buildCursorSuffix(visibleCount, activeCursor);
+		const cursorSuffix = buildCursorSuffix(lines.length - 1, activeCursor);
 
 		if (str === previousOutput && cursorChanged) {
 			stream.write(
@@ -81,7 +79,6 @@ const createStandard = (
 					cursorWasShown,
 					previousLineCount,
 					previousCursorPosition,
-					visibleLineCount: visibleCount,
 					cursorPosition: activeCursor,
 				}),
 			);
@@ -151,9 +148,7 @@ const createStandard = (
 		}
 
 		if (activeCursor) {
-			stream.write(
-				buildCursorSuffix(visibleLineCount(lines, str), activeCursor),
-			);
+			stream.write(buildCursorSuffix(lines.length - 1, activeCursor));
 		}
 
 		previousCursorPosition = activeCursor ? {...activeCursor} : undefined;
@@ -172,7 +167,7 @@ const createStandard = (
 };
 
 const createIncremental = (
-	stream: Writable,
+	stream: NodeJS.WritableStream,
 	{showCursor = false} = {},
 ): LogUpdate => {
 	let previousLines: string[] = [];
@@ -224,7 +219,6 @@ const createIncremental = (
 					cursorWasShown,
 					previousLineCount: previousLines.length,
 					previousCursorPosition,
-					visibleLineCount: visibleCount,
 					cursorPosition: activeCursor,
 				}),
 			);
@@ -240,7 +234,10 @@ const createIncremental = (
 		);
 
 		if (str === '\n' || previousOutput.length === 0) {
-			const cursorSuffix = buildCursorSuffix(visibleCount, activeCursor);
+			const cursorSuffix = buildCursorSuffix(
+				nextLines.length - 1,
+				activeCursor,
+			);
 			stream.write(
 				returnPrefix +
 					ansiEscapes.eraseLines(previousLines.length) +
@@ -297,7 +294,7 @@ const createIncremental = (
 			);
 		}
 
-		const cursorSuffix = buildCursorSuffix(visibleCount, activeCursor);
+		const cursorSuffix = buildCursorSuffix(nextLines.length - 1, activeCursor);
 		buffer.push(cursorSuffix);
 
 		stream.write(buffer.join(''));
@@ -354,9 +351,7 @@ const createIncremental = (
 		}
 
 		if (activeCursor) {
-			stream.write(
-				buildCursorSuffix(visibleLineCount(lines, str), activeCursor),
-			);
+			stream.write(buildCursorSuffix(lines.length - 1, activeCursor));
 		}
 
 		previousCursorPosition = activeCursor ? {...activeCursor} : undefined;
@@ -375,7 +370,7 @@ const createIncremental = (
 };
 
 const create = (
-	stream: Writable,
+	stream: NodeJS.WritableStream,
 	{showCursor = false, incremental = false} = {},
 ): LogUpdate => {
 	if (incremental) {

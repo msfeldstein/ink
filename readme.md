@@ -1270,7 +1270,11 @@ Accepts the same values as [`backgroundColor`](#backgroundcolor) in `<Text>` com
 Falls back to `borderBackgroundColor` if not specified.
 
 ```jsx
-<Box borderStyle="round" borderColor="white" borderBottomBackgroundColor="green">
+<Box
+	borderStyle="round"
+	borderColor="white"
+	borderBottomBackgroundColor="green"
+>
 	<Text>Hello world</Text>
 </Box>
 ```
@@ -1949,6 +1953,51 @@ const Example = () => {
 	return …;
 };
 ```
+
+#### suspendTerminal(callback?)
+
+Type: `Function`
+
+Temporarily hands the terminal over to a child process (such as `$EDITOR`, `less`, or `fzf`), then restores Ink's terminal state and forces a full redraw.
+
+While suspended, Ink stops writing output, stops consuming input, and restores the terminal modes the child expects (raw mode off, cursor visible, bracketed paste off, alternate screen exited, kitty keyboard protocol off). When the suspension ends, Ink reapplies its own terminal state and repaints from scratch.
+
+##### callback
+
+Type: `Function`
+
+When a callback is provided, Ink suspends, runs the callback, and restores the terminal once it settles, even if the callback throws.
+
+```js
+import {useApp} from 'ink';
+
+const {suspendTerminal} = useApp();
+
+await suspendTerminal(async () => {
+	await runEditor();
+});
+```
+
+When called without a callback, it returns a suspension you resume yourself. `resume()` is async because restoring the terminal may need to wait for ordered writes and a full redraw.
+
+```js
+const suspension = await suspendTerminal();
+
+try {
+	await runEditor();
+} finally {
+	await suspension.resume();
+}
+```
+
+The suspension is also a disposable, so it can be resumed automatically with `await using`:
+
+```js
+await using suspension = await suspendTerminal();
+await runEditor();
+```
+
+Suspending while a suspension is already active throws. This is supported only in interactive TTY mode; in non-interactive output the callback still runs but Ink performs no terminal handoff.
 
 ### useStdin()
 
@@ -2875,12 +2924,13 @@ clear();
 
 #### measureElement(ref)
 
-Measure the dimensions of a particular `<Box>` element.
-Returns an object with `width` and `height` properties.
-This function is useful when your component needs to know the amount of available space it has. You can use it when you need to change the layout based on the length of its content.
+Measure the layout metrics of a particular `<Box>` element.
+Returns an object with `x`, `y`, `width`, and `height` properties.
+
+`x` and `y` are the element's position within the live layout region, computed by walking up the layout tree. These are layout-tree coordinates, not terminal viewport coordinates. To compare them with mouse events, convert the event coordinates using the live region's viewport position. This is necessary even in alternate-screen mode when output, such as `<Static>` content, appears above the live region.
 
 > [!NOTE]
-> `measureElement()` returns `{width: 0, height: 0}` when called during render (before layout is calculated). Call it from post-render code, such as `useEffect`, `useLayoutEffect`, input handlers, or timer callbacks. When content changes, pass the relevant dependency to your effect so it re-measures after each update.
+> `measureElement()` returns `{x: 0, y: 0, width: 0, height: 0}` when called during render (before layout is calculated). Call it from post-render code, such as `useEffect`, `useLayoutEffect`, input handlers, or timer callbacks. When content changes, pass the relevant dependency to your effect so it re-measures after each update.
 
 ##### ref
 
@@ -2896,8 +2946,8 @@ const Example = () => {
 	const ref = useRef();
 
 	useEffect(() => {
-		const {width, height} = measureElement(ref.current);
-		// width = 100, height = 1
+		const {x, y, width, height} = measureElement(ref.current);
+		// x = 0, y = 0, width = 100, height = 1
 	}, []);
 
 	return (

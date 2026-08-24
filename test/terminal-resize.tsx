@@ -9,7 +9,12 @@ import createStdout, {type FakeStdout} from './helpers/create-stdout.js';
 const getWriteContents = (stdout: FakeStdout): string[] =>
 	stdout
 		.getWrites()
-		.filter(w => !w.startsWith('\u001B[?25') && !w.startsWith('\u001B[?2026'));
+		.filter(
+			w =>
+				w.length > 0 &&
+				!w.startsWith('\u001B[?25') &&
+				!w.startsWith('\u001B[?2026'),
+		);
 
 test.serial(
 	'useWindowSize returns current terminal dimensions and updates on resize',

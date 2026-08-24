@@ -1,7 +1,8 @@
 import process from 'node:process';
+import EventEmitter from 'node:events';
 import vm from 'node:vm';
 import {spawn as spawnProcess} from 'node:child_process';
-import {PassThrough, Writable} from 'node:stream';
+import {PassThrough, Readable, Writable} from 'node:stream';
 import url from 'node:url';
 import * as path from 'node:path';
 import {createRequire} from 'node:module';
@@ -19,11 +20,20 @@ import ansiEscapes from 'ansi-escapes';
 import stripAnsi from 'strip-ansi';
 import boxen from 'boxen';
 import delay from 'delay';
-import {render, Box, Text, useApp, useCursor, useInput} from '../src/index.js';
+import {
+	render,
+	Box,
+	Text,
+	useApp,
+	useCursor,
+	useInput,
+	useStdin,
+} from '../src/index.js';
 import {type RenderMetrics} from '../src/ink.js';
 import {bsu, esu} from '../src/write-synchronized.js';
 import {createStdin, emitReadable} from './helpers/create-stdin.js';
 import createStdout from './helpers/create-stdout.js';
+import {reconstructTerminalLines} from './helpers/reconstruct-terminal.js';
 
 const textDecoder = new TextDecoder();
 
@@ -34,7 +44,136 @@ const {spawn} = require('node-pty') as typeof import('node-pty');
 
 const __dirname = url.fileURLToPath(new URL('.', import.meta.url));
 
-const term = (fixture: string, args: string[] = []) => {
+const createWritable = (): Writable =>
+	new Writable({
+		write(_chunk, _encoding, callback) {
+			callback();
+		},
+	});
+
+const createCallbackWritableStream = (
+	onWriteCallback: () => void,
+): NodeJS.WritableStream => {
+	const stream = new EventEmitter();
+
+	Object.assign(stream, {
+		writable: true,
+		write(_chunk: string | Uint8Array, callback?: () => void) {
+			setTimeout(() => {
+				onWriteCallback();
+				callback?.();
+			}, 20);
+
+			return true;
+		},
+		end() {
+			return stream;
+		},
+	});
+
+	return stream as unknown as NodeJS.WritableStream;
+};
+
+test.serial(
+	'accepts standard Node streams without stream-specific assertions',
+	async t => {
+		const stdout = createWritable();
+		const stdin = new Readable({
+			read() {},
+		});
+
+		const {unmount, waitUntilExit} = render(<Text>Hello</Text>, {
+			stdout,
+			stdin,
+			stderr: stdout,
+			interactive: true,
+			patchConsole: false,
+		});
+
+		unmount();
+		await waitUntilExit();
+		t.pass();
+	},
+);
+
+test.serial(
+	'reports raw mode as unavailable when a TTY input stream lacks raw mode',
+	async t => {
+		let isRawModeSupported: boolean | undefined;
+
+		const stdin = new Readable({
+			read() {},
+		});
+		Object.defineProperty(stdin, 'isTTY', {value: true});
+
+		function Test() {
+			isRawModeSupported = useStdin().isRawModeSupported;
+			return <Text>Hello</Text>;
+		}
+
+		const stdout = createWritable();
+
+		const {unmount, waitUntilExit} = render(<Test />, {
+			stdout,
+			stdin,
+			interactive: false,
+			patchConsole: false,
+		});
+
+		t.false(isRawModeSupported);
+		unmount();
+		await waitUntilExit();
+	},
+);
+
+test.serial('handles input without requiring process ref methods', async t => {
+	const rawModeChanges: boolean[] = [];
+	let receivedInput = '';
+	const stdin = new Readable({
+		read() {},
+	});
+	Object.defineProperty(stdin, 'isTTY', {value: true});
+	Object.defineProperty(stdin, 'setRawMode', {
+		value(mode: boolean) {
+			rawModeChanges.push(mode);
+		},
+	});
+
+	function Test() {
+		useInput(input => {
+			receivedInput = input;
+		});
+
+		return <Text>Hello</Text>;
+	}
+
+	const stdout = createWritable();
+
+	const {unmount, waitUntilExit} = render(<Test />, {
+		stdout,
+		stdin,
+		interactive: false,
+		patchConsole: false,
+	});
+
+	t.deepEqual(rawModeChanges, [true]);
+	stdin.push('a');
+	await delay(0);
+	t.is(receivedInput, 'a');
+
+	unmount();
+	await new Promise(resolve => {
+		queueMicrotask(resolve);
+	});
+	await waitUntilExit();
+	t.deepEqual(rawModeChanges, [true, false]);
+});
+
+const term = (
+	fixture: string,
+	args: string[] = [],
+	options: {rows?: number} = {},
+) => {
 	let resolve: (value?: unknown) => void;
 	let reject: (error: Error) => void;
 
@@ -61,6 +200,7 @@ const term = (fixture: string, args: string[] = []) => {
 			cols: 100,
 			cwd: __dirname,
 			env,
+			...(options.rows === undefined ? {} : {rows: options.rows}),
 		},
 	);
 
@@ -167,7 +307,8 @@ type Issue450Fixture =
 	| 'issue-450-grow-to-fullscreen-rerender'
 	| 'issue-450-shrink-from-fullscreen-rerender'
 	| 'issue-450-shrink-from-overflow-rerender'
-	| 'issue-450-static-shrink-from-fullscreen-rerender';
+	| 'issue-450-static-shrink-from-fullscreen-rerender'
+	| 'issue-969-windows-full-height-rerender';
 
 const runIssue450Fixture = async (
 	fixture: Issue450Fixture,
@@ -354,6 +495,68 @@ test.serial(
 	},
 );
 
+test.serial(
+	'last line of <Static> survives a full-clear accounting frame (related to #973)',
+	async t => {
+		const rows = 4;
+		const ps = term('full-clear-static-accounting', [String(rows)], {
+			rows,
+		});
+		await ps.waitForExit();
+
+		// The raw stream still contains "F" even when it has been erased on screen,
+		// so reconstruct the visible buffer (scrollback + viewport) and assert the
+		// last committed <Static> line is actually still there.
+		const visibleLines = reconstructTerminalLines(ps.output, rows).filter(
+			line => line.length > 0,
+		);
+
+		// Positive control: "LIVE-0" only renders on the final live-region update —
+		// the frame that performs the off-by-one erase. Without this guard, an early
+		// exit (before that frame) would leave "F" trivially present and the test
+		// would pass without ever exercising the bug.
+		t.true(
+			visibleLines.includes('LIVE-0'),
+			`Expected the bug-triggering live-region update to have rendered, got ${JSON.stringify(
+				visibleLines,
+			)}`,
+		);
+
+		// Distinct-frame guards: if the three phases coalesced into fewer renders,
+		// the off-by-one would never be planted and the assertions here would pass
+		// without exercising the bug. Only the inflate frame renders "live-4", and
+		// its overflow is what first routes a frame through the full clear.
+		t.true(
+			ps.output.includes('live-4'),
+			'Expected the inflate phase to have rendered as its own frame',
+		);
+		t.true(
+			ps.output.includes(ansiEscapes.clearTerminal),
+			'Expected the overflow to have routed a frame through the full-clear path',
+		);
+
+		// The shrink frame's full clear is the last one; the lowercase "live-0"
+		// after it proves shrink and nudge rendered as separate frames.
+		const lastClearIndex = ps.output.lastIndexOf(ansiEscapes.clearTerminal);
+		t.false(
+			ps.output.includes('live-4', lastClearIndex),
+			'Expected the last full clear to be the shrink frame, not the inflate frame',
+		);
+		t.true(
+			ps.output.includes('live-0', lastClearIndex) &&
+				ps.output.includes('LIVE-0', lastClearIndex),
+			'Expected the shrink and nudge phases to have rendered as separate frames',
+		);
+
+		t.true(
+			visibleLines.includes('F'),
+			`Last static line (F) must remain visible after a live-region update, got ${JSON.stringify(
+				visibleLines,
+			)}`,
+		);
+	},
+);
+
 test.serial('erase screen', async t => {
 	const ps = term('erase', ['3']);
 	await ps.waitForExit();
@@ -482,6 +685,28 @@ test.serial(
 		t.true(
 			eraseLineCount > 0,
 			'Expected incremental erase sequences for fullscreen rerenders',
+		);
+	},
+);
+
+test.serial(
+	'#969: full-height rerenders on Windows should clear terminal between frames',
+	async t => {
+		const output = await runIssue450Fixture(
+			'issue-969-windows-full-height-rerender',
+		);
+
+		assertIssue450DynamicFrameOutput(t, output);
+		// Windows consoles scroll when the bottom-right cell is written, which
+		// breaks incremental erase for fullscreen frames. Each rerender must fall
+		// back to a full clear there. The fixture process believes it is on
+		// Windows, so ansi-escapes may emit its legacy clearTerminal variant
+		// there (the host's os.release() decides), while this process resolves
+		// the modern one. Count the eraseScreen prefix shared by both variants.
+		const fullClearCount = countOccurrences(output, ansiEscapes.eraseScreen);
+		t.true(
+			fullClearCount >= 2,
+			`Expected a full clear per fullscreen rerender, received ${fullClearCount}`,
 		);
 	},
 );
@@ -1050,6 +1275,39 @@ test.serial('waitUntilExit resolves after stdout write callback', async t => {
 
 	t.true(writeCallbackFired);
 });
+
+test.serial(
+	'waitUntilRenderFlush waits for generic stdout write callback',
+	async t => {
+		let writeCallbackCount = 0;
+		const stdout = createCallbackWritableStream(() => {
+			writeCallbackCount++;
+		});
+
+		const {unmount, waitUntilExit, waitUntilRenderFlush} = render(
+			<Text>Hello</Text>,
+			{
+				stdout,
+				interactive: false,
+				patchConsole: false,
+			},
+		);
+
+		t.teardown(async () => {
+			unmount();
+			await waitUntilExit();
+		});
+
+		await waitUntilRenderFlush();
+
+		t.is(writeCallbackCount, 1);
+
+		unmount();
+		await waitUntilExit();
+
+		t.is(writeCallbackCount, 3);
+	},
+);
 
 test.serial(
 	'createDelayedWriteCallbackStdout delays only the first matching chunk',

@@ -1,4 +1,4 @@
-import {Stream} from 'node:stream';
+import {Stream, type Writable} from 'node:stream';
 import process from 'node:process';
 import type {ReactNode} from 'react';
 import Ink, {type Options as InkOptions, type RenderMetrics} from './ink.js';
@@ -11,20 +11,20 @@ export type RenderOptions = {
 
 	@default process.stdout
 	*/
-	stdout?: NodeJS.WriteStream;
+	stdout?: NodeJS.WritableStream;
 
 	/**
 	Input stream where app will listen for input.
 
 	@default process.stdin
 	*/
-	stdin?: NodeJS.ReadStream;
+	stdin?: NodeJS.ReadableStream;
 
 	/**
 	Error stream.
 	@default process.stderr
 	*/
-	stderr?: NodeJS.WriteStream;
+	stderr?: NodeJS.WritableStream;
 
 	/**
 	If true, each update will be rendered as separate output, without replacing the previous one.
@@ -198,7 +198,7 @@ Mount a component and render the output.
 */
 const render = (
 	node: ReactNode,
-	options?: NodeJS.WriteStream | RenderOptions,
+	options?: Writable | RenderOptions,
 ): Instance => {
 	const inkOptions: InkOptions = {
 		stdout: process.stdout,
@@ -237,7 +237,7 @@ const render = (
 export default render;
 
 const getOptions = (
-	stdout: NodeJS.WriteStream | RenderOptions | undefined = {},
+	stdout: Writable | RenderOptions | undefined = {},
 ): RenderOptions => {
 	if (stdout instanceof Stream) {
 		return {
@@ -250,7 +250,7 @@ const getOptions = (
 };
 
 const getInstance = (
-	stdout: NodeJS.WriteStream,
+	stdout: NodeJS.WritableStream,
 	createInstance: () => Ink,
 ): Ink => {
 	const instance = instances.get(stdout);

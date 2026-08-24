@@ -20,6 +20,10 @@ export {default as Spacer} from './components/Spacer.js';
 export type {Key} from './hooks/use-input.js';
 export {default as useInput} from './hooks/use-input.js';
 export {default as usePaste} from './hooks/use-paste.js';
+export type {
+	SuspendTerminal,
+	TerminalSuspension,
+} from './components/AppContext.js';
 export {default as useApp} from './hooks/use-app.js';
 export {default as useStdin} from './hooks/use-stdin.js';
 export {default as useStdout} from './hooks/use-stdout.js';
@@ -36,6 +40,7 @@ export type {BoxMetrics, UseBoxMetricsResult} from './hooks/use-box-metrics.js';
 export {default as useBoxMetrics} from './hooks/use-box-metrics.js';
 export type {CursorPosition} from './log-update.js';
 export {default as measureElement} from './measure-element.js';
+export type {ElementMetrics} from './measure-element.js';
 export type {DOMElement} from './dom.js';
 export {kittyFlags, kittyModifiers} from './kitty-keyboard.js';
 export type {KittyKeyboardOptions, KittyFlagName} from './kitty-keyboard.js';
