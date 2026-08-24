@@ -650,11 +650,13 @@ export default class Ink {
 				value={{isScreenReaderEnabled: this.isScreenReaderEnabled}}
 			>
 				<App
+					rootNode={this.rootNode}
 					stdin={this.options.stdin}
 					stdout={this.options.stdout}
 					stderr={this.options.stderr}
 					exitOnCtrlC={this.options.exitOnCtrlC}
 					interactive={this.interactive}
+					alternateScreen={this.alternateScreen}
 					renderThrottleMs={this.renderThrottleMs}
 					writeToStdout={this.writeToStdout}
 					writeToStderr={this.writeToStderr}
