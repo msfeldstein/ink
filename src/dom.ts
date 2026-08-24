@@ -14,6 +14,17 @@ type InkNode = {
 
 type LayoutListener = () => void;
 
+export type ClickEvent = {
+	readonly x: number;
+	readonly y: number;
+	readonly button: 'left';
+	readonly target: DOMElement;
+	currentTarget: DOMElement;
+	stopPropagation: () => void;
+};
+
+export type ClickHandler = (event: ClickEvent) => void;
+
 export type TextName = '#text';
 export type ElementNames =
 	| 'ink-root'
@@ -66,9 +77,12 @@ export type DOMElement = {
 	// Internal properties
 	isStaticDirty?: boolean;
 	staticNode?: DOMElement;
+	// Tracks the previous commit's `staticNode` so the reconciler can detect identity changes (mount, unmount, key-driven remount) and reset `fullStaticOutput`.
+	previousStaticNode?: DOMElement;
 	onComputeLayout?: () => void;
 	onRender?: () => void;
 	onImmediateRender?: () => void;
+	onStaticChange?: () => void;
 	internal_layoutListeners?: Set<LayoutListener>;
 } & InkNode;
 
@@ -87,7 +101,12 @@ export type DOMNode<T = {nodeName: NodeNames}> = T extends {
 	: never;
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
-export type DOMNodeAttribute = boolean | string | number;
+export type DOMNodeAttribute =
+	| boolean
+	| string
+	| number
+	| ClickHandler
+	| undefined;
 
 export const createNode = (nodeName: ElementNames): DOMElement => {
 	const node: DOMElement = {

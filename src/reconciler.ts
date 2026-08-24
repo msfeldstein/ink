@@ -164,6 +164,16 @@ export default createReconciler<
 
 		emitLayoutListeners(rootNode);
 
+		/*
+		Fire `onStaticChange` BEFORE `onImmediateRender` so ink resets accumulated static output before the new instance emits. Without this, items from a replaced/removed <Static> stay in `fullStaticOutput` and get replayed on rewrites.
+		*/
+		if (rootNode.staticNode !== rootNode.previousStaticNode) {
+			rootNode.previousStaticNode = rootNode.staticNode;
+			if (typeof rootNode.onStaticChange === 'function') {
+				rootNode.onStaticChange();
+			}
+		}
+
 		// Since renders are throttled at the instance level and <Static> component children
 		// are rendered only once and then get deleted, we need an escape hatch to
 		// trigger an immediate render to ensure <Static> children are written to output before they get erased
@@ -295,7 +305,11 @@ export default createReconciler<
 		removeChildNode(node, removeNode);
 		cleanupYogaNode(removeNode.yogaNode);
 
-		if (removeNode.internal_static && currentRootNode) {
+		// Only clear staticNode if it still points at the removed node. On key-driven remounts, `createInstance` already registered the new node before this removal fires.
+		if (
+			removeNode.internal_static &&
+			currentRootNode?.staticNode === removeNode
+		) {
 			currentRootNode.staticNode = undefined;
 		}
 	},
@@ -351,7 +365,11 @@ export default createReconciler<
 		removeChildNode(node, removeNode);
 		cleanupYogaNode(removeNode.yogaNode);
 
-		if (removeNode.internal_static && currentRootNode) {
+		// Same guard as removeChildFromContainer: only clear if this is still the active static node.
+		if (
+			removeNode.internal_static &&
+			currentRootNode?.staticNode === removeNode
+		) {
 			currentRootNode.staticNode = undefined;
 		}
 	},

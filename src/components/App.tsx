@@ -11,6 +11,15 @@ import React, {
 import cliCursor from 'cli-cursor';
 import {type CursorPosition} from '../log-update.js';
 import {createInputParser} from '../input-parser.js';
+import {type DOMElement} from '../dom.js';
+import {
+	disableMouseTracking,
+	dispatchClick,
+	enableMouseTracking,
+	hasClickHandler,
+	isMouseInput,
+	parseMouseInput,
+} from '../mouse.js';
 import AppContext from './AppContext.js';
 import StdinContext from './StdinContext.js';
 import StdoutContext from './StdoutContext.js';
@@ -33,6 +42,7 @@ type AnimationSubscriber = {
 
 type Props = {
 	readonly children: ReactNode;
+	readonly rootNode: DOMElement;
 	readonly stdin: NodeJS.ReadStream;
 	readonly stdout: NodeJS.WriteStream;
 	readonly stderr: NodeJS.WriteStream;
@@ -43,6 +53,7 @@ type Props = {
 	readonly onWaitUntilRenderFlush: () => Promise<void>;
 	readonly setCursorPosition: (position: CursorPosition | undefined) => void;
 	readonly interactive: boolean;
+	readonly alternateScreen: boolean;
 	readonly renderThrottleMs: number;
 };
 
@@ -56,6 +67,7 @@ type Focusable = {
 // It also handles Ctrl+C exiting and cursor visibility
 function App({
 	children,
+	rootNode,
 	stdin,
 	stdout,
 	stderr,
@@ -66,6 +78,7 @@ function App({
 	onWaitUntilRenderFlush,
 	setCursorPosition,
 	interactive,
+	alternateScreen,
 	renderThrottleMs,
 }: Props): React.ReactNode {
 	const [isFocusEnabled, setIsFocusEnabled] = useState(true);
@@ -86,6 +99,7 @@ function App({
 	// Count how many components enabled raw mode to avoid disabling
 	// raw mode until all components don't need it anymore
 	const rawModeEnabledCount = useRef(0);
+	const pendingDisableRawModeRef = useRef(false);
 	// Count how many components enabled bracketed paste mode
 	const bracketedPasteModeEnabledCount = useRef(0);
 	// eslint-disable-next-line @typescript-eslint/naming-convention
@@ -96,6 +110,7 @@ function App({
 	const readableListenerRef = useRef<(() => void) | undefined>(undefined);
 	const inputParserRef = useRef(createInputParser());
 	const pendingInputFlushRef = useRef<NodeJS.Timeout | undefined>(undefined);
+	const isMouseTrackingEnabledRef = useRef(false);
 	// Small delay to let chunked escape sequences complete before flushing as literal input.
 	const pendingInputFlushDelayMilliseconds = 20;
 
@@ -208,18 +223,26 @@ function App({
 		readableListenerRef.current = undefined;
 	}, [stdin]);
 
-	const disableRawMode = useCallback((): void => {
-		stdin.setRawMode(false);
-		detachReadableListener();
-		stdin.unref();
-		rawModeEnabledCount.current = 0;
+	const clearInputState = useCallback((): void => {
 		inputParserRef.current.reset();
 		clearPendingInputFlush();
-	}, [stdin, detachReadableListener, clearPendingInputFlush]);
+		detachReadableListener();
+	}, [clearPendingInputFlush, detachReadableListener]);
+
+	const disableRawMode = useCallback((): void => {
+		pendingDisableRawModeRef.current = false;
+		stdin.setRawMode(false);
+		stdin.unref();
+		rawModeEnabledCount.current = 0;
+		clearInputState();
+	}, [stdin, clearInputState]);
 
 	const handleExit = useCallback(
 		(errorOrResult?: unknown): void => {
-			if (isRawModeSupported && rawModeEnabledCount.current > 0) {
+			if (
+				isRawModeSupported &&
+				(rawModeEnabledCount.current > 0 || pendingDisableRawModeRef.current)
+			) {
 				disableRawMode();
 			}
 
@@ -247,10 +270,27 @@ function App({
 
 	const emitInput = useCallback(
 		(input: string): void => {
+			if (!isMouseTrackingEnabledRef.current) {
+				handleInput(input);
+				internal_eventEmitter.current.emit('input', input);
+				return;
+			}
+
+			const mouseInput = parseMouseInput(input);
+
+			if (mouseInput) {
+				dispatchClick(rootNode, mouseInput);
+				return;
+			}
+
+			if (isMouseInput(input)) {
+				return;
+			}
+
 			handleInput(input);
 			internal_eventEmitter.current.emit('input', input);
 		},
-		[handleInput],
+		[handleInput, rootNode],
 	);
 
 	const schedulePendingInputFlush = useCallback((): void => {
@@ -293,6 +333,16 @@ function App({
 		}
 	}, [stdin, emitInput, clearPendingInputFlush, schedulePendingInputFlush]);
 
+	const attachReadableListener = useCallback((): void => {
+		if (readableListenerRef.current) {
+			return;
+		}
+
+		// Store the listener reference to avoid stale closure when removing
+		readableListenerRef.current = handleReadable;
+		stdin.addListener('readable', handleReadable);
+	}, [stdin, handleReadable]);
+
 	const handleSetRawMode = useCallback(
 		(isEnabled: boolean): void => {
 			if (!isRawModeSupported) {
@@ -310,29 +360,52 @@ function App({
 			stdin.setEncoding('utf8');
 
 			if (isEnabled) {
-				// Ensure raw mode is enabled only once
 				if (rawModeEnabledCount.current === 0) {
-					stdin.ref();
-					stdin.setRawMode(true);
-					// Store the listener reference to avoid stale closure when removing
-					readableListenerRef.current = handleReadable;
-					stdin.addListener('readable', handleReadable);
+					// A same-render component swap may have detached input handling while
+					// leaving terminal raw mode enabled until the queued disable runs.
+					const isRawModeAlreadyEnabled = pendingDisableRawModeRef.current;
+					pendingDisableRawModeRef.current = false;
+
+					if (!isRawModeAlreadyEnabled) {
+						stdin.ref();
+						stdin.setRawMode(true);
+					}
+
+					attachReadableListener();
 				}
 
 				rawModeEnabledCount.current++;
 				return;
 			}
 
-			// Disable raw mode only when no components left that are using it
 			if (rawModeEnabledCount.current === 0) {
 				return;
 			}
 
 			if (--rawModeEnabledCount.current === 0) {
-				disableRawMode();
+				// Stop owning input immediately so pending parser state cannot leak into
+				// a replacement `useInput` component mounted in the same React update.
+				clearInputState();
+
+				// Defer only the terminal raw-mode teardown so a same-render replacement
+				// can keep the process ref and raw mode active without a disable/enable cycle.
+				pendingDisableRawModeRef.current = true;
+				queueMicrotask(() => {
+					if (!pendingDisableRawModeRef.current) {
+						return;
+					}
+
+					disableRawMode();
+				});
 			}
 		},
-		[isRawModeSupported, stdin, handleReadable, disableRawMode],
+		[
+			isRawModeSupported,
+			stdin,
+			attachReadableListener,
+			clearInputState,
+			disableRawMode,
+		],
 	);
 
 	const handleSetBracketedPasteMode = useCallback(
@@ -360,6 +433,37 @@ function App({
 		},
 		[stdout],
 	);
+
+	const disableMouseMode = useCallback((): void => {
+		if (!isMouseTrackingEnabledRef.current) {
+			return;
+		}
+
+		isMouseTrackingEnabledRef.current = false;
+		stdout.write(disableMouseTracking);
+		handleSetRawMode(false);
+	}, [stdout, handleSetRawMode]);
+
+	useEffect(() => {
+		const shouldEnableMouseMode =
+			alternateScreen &&
+			interactive &&
+			stdout.isTTY &&
+			hasClickHandler(rootNode);
+
+		if (shouldEnableMouseMode && !isMouseTrackingEnabledRef.current) {
+			isMouseTrackingEnabledRef.current = true;
+			stdout.write(enableMouseTracking);
+			handleSetRawMode(true);
+			return;
+		}
+
+		if (!shouldEnableMouseMode) {
+			disableMouseMode();
+		}
+	});
+
+	useEffect(() => disableMouseMode, [disableMouseMode]);
 
 	// Focus navigation helpers
 	const findNextFocusable = useCallback(
@@ -581,7 +685,10 @@ function App({
 				cliCursor.show(stdout);
 			}
 
-			if (isRawModeSupported && rawModeEnabledCount.current > 0) {
+			if (
+				isRawModeSupported &&
+				(rawModeEnabledCount.current > 0 || pendingDisableRawModeRef.current)
+			) {
 				disableRawMode();
 			}
 
