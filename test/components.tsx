@@ -1,6 +1,7 @@
 import EventEmitter from 'node:events';
 import process from 'node:process';
 import test from 'ava';
+import FakeTimers from '@sinonjs/fake-timers';
 import chalk from 'chalk';
 import stripAnsi from 'strip-ansi';
 import React, {Component, useEffect, useState} from 'react';
@@ -17,15 +18,28 @@ import {
 	useApp,
 	useInput,
 	useStdin,
+	type ClickEvent,
 } from '../src/index.js';
 import createStdout from './helpers/create-stdout.js';
-import {emitReadable} from './helpers/create-stdin.js';
+import {createStdin, emitReadable} from './helpers/create-stdin.js';
 import {
 	renderToString,
 	renderToStringAsync,
 } from './helpers/render-to-string.js';
 import {run} from './helpers/run.js';
 import {renderAsync} from './helpers/test-renderer.js';
+
+const createRawModeStdin = (): NodeJS.WriteStream => {
+	const stdin = new EventEmitter() as NodeJS.WriteStream;
+	stdin.setEncoding = () => {};
+	stdin.setRawMode = spy();
+	stdin.isTTY = true;
+	stdin.ref = spy();
+	stdin.unref = spy();
+	stdin.read = stub();
+
+	return stdin;
+};
 
 test('text', t => {
 	const output = renderToString(<Text>Hello World</Text>);
@@ -542,6 +556,127 @@ test('static output stops accumulating after Static unmounts (#904)', t => {
 	t.true(outputAfterChurn.includes('Dynamic'));
 });
 
+test('fullStaticOutput is reset when <Static> unmounts so stale items are not replayed', t => {
+	// Unmounting <Static> must clear `fullStaticOutput` so its items stop appearing in subsequent writes.
+	const stdout = createStdout();
+
+	function App({
+		show,
+		dynamicLabel,
+	}: {
+		readonly show: boolean;
+		readonly dynamicLabel: string;
+	}) {
+		return (
+			<Box>
+				{show ? (
+					<Static items={['HISTORY-A', 'HISTORY-B']}>
+						{item => <Text key={item}>{item}</Text>}
+					</Static>
+				) : null}
+				<Text>{dynamicLabel}</Text>
+			</Box>
+		);
+	}
+
+	const {rerender} = render(<App show dynamicLabel="d1" />, {
+		stdout,
+		debug: true,
+	});
+
+	const afterMount = (stdout.write as any).lastCall.args[0] as string;
+	t.true(
+		afterMount.includes('HISTORY-A') && afterMount.includes('HISTORY-B'),
+		'Static items must be emitted on first mount',
+	);
+
+	rerender(<App show={false} dynamicLabel="d2" />);
+
+	const afterUnmount = (stdout.write as any).lastCall.args[0] as string;
+	t.false(
+		afterUnmount.includes('HISTORY-A'),
+		'fullStaticOutput must NOT replay HISTORY-A after Static unmount',
+	);
+	t.false(
+		afterUnmount.includes('HISTORY-B'),
+		'fullStaticOutput must NOT replay HISTORY-B after Static unmount',
+	);
+	t.true(afterUnmount.includes('d2'), 'new dynamic output must still render');
+});
+
+test('remounting <Static> via key change emits the new items (nested under <Box>)', t => {
+	/*
+	Exercises the `removeChild` path (Static nested in a <Box>). On key-driven remount, `createInstance` registers the new node before the old one is removed; the removal must not clobber the fresh pointer.
+	*/
+	const stdout = createStdout();
+
+	function App({session}: {readonly session: number}) {
+		const items = session === 1 ? ['old-A', 'old-B'] : ['new-C', 'new-D'];
+		return (
+			<Box>
+				<Static key={session} items={items}>
+					{item => <Text key={item}>{item}</Text>}
+				</Static>
+				<Text>dynamic</Text>
+			</Box>
+		);
+	}
+
+	const {rerender} = render(<App session={1} />, {stdout, debug: true});
+
+	const afterFirstMount = (stdout.write as any).lastCall.args[0] as string;
+	t.true(
+		afterFirstMount.includes('old-A') && afterFirstMount.includes('old-B'),
+		'first mount must emit its Static items',
+	);
+
+	rerender(<App session={2} />);
+
+	const afterRemount = (stdout.write as any).lastCall.args[0] as string;
+	t.true(
+		afterRemount.includes('new-C'),
+		'remounted Static must emit its first new item ("new-C") to stdout',
+	);
+	t.true(
+		afterRemount.includes('new-D'),
+		'remounted Static must emit its second new item ("new-D") to stdout',
+	);
+});
+
+test('remounting <Static> via key change emits the new items (root-level — removeChildFromContainer)', t => {
+	// Same as the nested case above but exercises the `removeChildFromContainer` path (Static is a direct child of the root).
+	const stdout = createStdout();
+
+	function App({session}: {readonly session: number}) {
+		const items = session === 1 ? ['old-A', 'old-B'] : ['new-C', 'new-D'];
+		return (
+			<Static key={session} items={items}>
+				{item => <Text key={item}>{item}</Text>}
+			</Static>
+		);
+	}
+
+	const {rerender} = render(<App session={1} />, {stdout, debug: true});
+
+	const afterFirstMount = (stdout.write as any).lastCall.args[0] as string;
+	t.true(
+		afterFirstMount.includes('old-A') && afterFirstMount.includes('old-B'),
+		'first mount must emit its Static items',
+	);
+
+	rerender(<App session={2} />);
+
+	const afterRemount = (stdout.write as any).lastCall.args[0] as string;
+	t.true(
+		afterRemount.includes('new-C'),
+		'remounted Static must emit "new-C" via removeChildFromContainer path',
+	);
+	t.true(
+		afterRemount.includes('new-D'),
+		'remounted Static must emit "new-D" via removeChildFromContainer path',
+	);
+});
+
 test('render only new items in static output on final render', t => {
 	const stdout = createStdout();
 
@@ -597,15 +732,10 @@ test('replace child node with text', t => {
 });
 
 // See https://github.com/vadimdemedes/ink/issues/145
-test('disable raw mode when all input components are unmounted', t => {
+test('disable raw mode when all input components are unmounted', async t => {
 	const stdout = createStdout();
 
-	const stdin = new EventEmitter() as NodeJS.WriteStream;
-	stdin.setEncoding = () => {};
-	stdin.setRawMode = spy();
-	stdin.isTTY = true; // Without this, setRawMode will throw
-	stdin.ref = spy();
-	stdin.unref = spy();
+	const stdin = createRawModeStdin();
 
 	const options = {
 		stdout,
@@ -651,14 +781,23 @@ test('disable raw mode when all input components are unmounted', t => {
 	t.true(stdin.setRawMode.calledOnce);
 	t.true(stdin.ref.calledOnce);
 	t.deepEqual(stdin.setRawMode.firstCall.args, [true]);
+	t.is(stdin.listenerCount('readable'), 1);
 
 	rerender(<Test renderFirstInput />);
 
 	t.true(stdin.setRawMode.calledOnce);
 	t.true(stdin.ref.calledOnce);
 	t.true(stdin.unref.notCalled);
+	t.is(stdin.listenerCount('readable'), 1);
 
 	rerender(<Test />);
+	t.true(stdin.setRawMode.calledOnce);
+	t.true(stdin.unref.notCalled);
+	t.is(stdin.listenerCount('readable'), 0);
+
+	await new Promise(resolve => {
+		queueMicrotask(resolve);
+	});
 
 	t.true(stdin.setRawMode.calledTwice);
 	t.true(stdin.ref.calledOnce);
@@ -666,14 +805,112 @@ test('disable raw mode when all input components are unmounted', t => {
 	t.deepEqual(stdin.setRawMode.lastCall.args, [false]);
 });
 
+test('do not disable raw mode when swapping components that use useInput', async t => {
+	const stdout = createStdout();
+
+	const stdin = createRawModeStdin();
+
+	const options = {
+		stdout,
+		stdin,
+		debug: true,
+	};
+
+	function StepA() {
+		useInput(() => {});
+		return <Text>A</Text>;
+	}
+
+	function StepB() {
+		useInput(() => {});
+		return <Text>B</Text>;
+	}
+
+	function Test({step}: {readonly step: number}) {
+		return step === 1 ? <StepA /> : <StepB />;
+	}
+
+	const {rerender} = render(
+		<Test step={1} />,
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+		options as any,
+	);
+
+	t.true(stdin.setRawMode.calledOnce);
+	t.true(stdin.ref.calledOnce);
+	t.deepEqual(stdin.setRawMode.firstCall.args, [true]);
+	t.is(stdin.listenerCount('readable'), 1);
+
+	rerender(<Test step={2} />);
+	t.is(stdin.listenerCount('readable'), 1);
+
+	await new Promise(resolve => {
+		queueMicrotask(resolve);
+	});
+
+	t.true(stdin.unref.notCalled);
+	t.deepEqual(stdin.setRawMode.lastCall.args, [true]);
+	t.is(stdin.listenerCount('readable'), 1);
+});
+
+test('clear pending input parser state when swapping components that use useInput', async t => {
+	const clock = FakeTimers.install({
+		toFake: ['setTimeout', 'clearTimeout'],
+	});
+
+	try {
+		const stdout = createStdout();
+
+		const stdin = createRawModeStdin();
+
+		const options = {
+			stdout,
+			stdin,
+			debug: true,
+		};
+
+		const receivedInputs: string[] = [];
+
+		function StepA() {
+			useInput(() => {});
+			return <Text>A</Text>;
+		}
+
+		function StepB() {
+			useInput(input => {
+				receivedInputs.push(input);
+			});
+
+			return <Text>B</Text>;
+		}
+
+		function Test({step}: {readonly step: number}) {
+			return step === 1 ? <StepA /> : <StepB />;
+		}
+
+		const {rerender} = render(
+			<Test step={1} />,
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+			options as any,
+		);
+
+		emitReadable(stdin, '\u001B[');
+		rerender(<Test step={2} />);
+
+		await new Promise(resolve => {
+			queueMicrotask(resolve);
+		});
+
+		await clock.tickAsync(20);
+
+		t.deepEqual(receivedInputs, []);
+	} finally {
+		clock.uninstall();
+	}
+});
+
 test('re-ref stdin when input is used after previous unmount', t => {
-	const stdin = new EventEmitter() as NodeJS.WriteStream;
-	stdin.setEncoding = () => {};
-	stdin.read = stub();
-	stdin.setRawMode = spy();
-	stdin.isTTY = true; // Without this, setRawMode will throw
-	stdin.ref = spy();
-	stdin.unref = spy();
+	const stdin = createRawModeStdin();
 
 	const options = {
 		stdout: createStdout(),
@@ -1100,21 +1337,23 @@ test.serial(
 	'primary screen - cleanup console output follows the native console during unmount',
 	async t => {
 		const stdout = createStdout(100, true);
-		const processStdoutWriteStub = stub(process.stdout, 'write').callsFake(((
-			_chunk: string | Uint8Array,
-			encoding?: BufferEncoding | ((error?: Error) => void),
-			callback?: (error?: Error) => void,
-		) => {
-			if (typeof encoding === 'function') {
-				encoding();
-			}
+		const processStdoutWriteStub = stub(process.stdout, 'write').callsFake(
+			(
+				_chunk: string | Uint8Array,
+				encoding?: BufferEncoding | ((error?: Error) => void),
+				callback?: (error?: Error) => void,
+			) => {
+				if (typeof encoding === 'function') {
+					encoding();
+				}
 
-			if (typeof callback === 'function') {
-				callback();
-			}
+				if (typeof callback === 'function') {
+					callback();
+				}
 
-			return true;
-		}) as typeof process.stdout.write);
+				return true;
+			},
+		);
 		t.teardown(() => {
 			processStdoutWriteStub.restore();
 		});
@@ -1239,21 +1478,23 @@ test.serial(
 	'alternate screen - cleanup console output follows the native console during unmount',
 	async t => {
 		const stdout = createStdout(100, true);
-		const processStdoutWriteStub = stub(process.stdout, 'write').callsFake(((
-			_chunk: string | Uint8Array,
-			encoding?: BufferEncoding | ((error?: Error) => void),
-			callback?: (error?: Error) => void,
-		) => {
-			if (typeof encoding === 'function') {
-				encoding();
-			}
+		const processStdoutWriteStub = stub(process.stdout, 'write').callsFake(
+			(
+				_chunk: string | Uint8Array,
+				encoding?: BufferEncoding | ((error?: Error) => void),
+				callback?: (error?: Error) => void,
+			) => {
+				if (typeof encoding === 'function') {
+					encoding();
+				}
 
-			if (typeof callback === 'function') {
-				callback();
-			}
+				if (typeof callback === 'function') {
+					callback();
+				}
 
-			return true;
-		}) as typeof process.stdout.write);
+				return true;
+			},
+		);
 		t.teardown(() => {
 			processStdoutWriteStub.restore();
 		});
@@ -1346,21 +1587,23 @@ test.serial(
 
 test('render warns when stdout is reused before unmount', async t => {
 	const stdout = createStdout(100, true);
-	const processStderrWriteStub = stub(process.stderr, 'write').callsFake(((
-		_chunk: string | Uint8Array,
-		encoding?: BufferEncoding | ((error?: Error) => void),
-		callback?: (error?: Error) => void,
-	) => {
-		if (typeof encoding === 'function') {
-			encoding();
-		}
+	const processStderrWriteStub = stub(process.stderr, 'write').callsFake(
+		(
+			_chunk: string | Uint8Array,
+			encoding?: BufferEncoding | ((error?: Error) => void),
+			callback?: (error?: Error) => void,
+		) => {
+			if (typeof encoding === 'function') {
+				encoding();
+			}
 
-		if (typeof callback === 'function') {
-			callback();
-		}
+			if (typeof callback === 'function') {
+				callback();
+			}
 
-		return true;
-	}) as typeof process.stderr.write);
+			return true;
+		},
+	);
 	t.teardown(() => {
 		processStderrWriteStub.restore();
 	});
@@ -1654,6 +1897,184 @@ test('link ansi escapes are closed properly', t => {
 	);
 
 	t.is(output, ']8;;https://example.comExample]8;;');
+});
+
+test('calls onClick when element receives a mouse click', t => {
+	const stdout = createStdout();
+	const stdin = createStdin();
+	const onClick = spy();
+
+	render(<Text onClick={onClick}>Click</Text>, {
+		stdout,
+		stdin,
+		debug: true,
+		interactive: true,
+		alternateScreen: true,
+	});
+
+	emitReadable(stdin, '\u001B[<0;1;1M');
+
+	t.is(onClick.callCount, 1);
+	t.like(onClick.firstCall.args[0], {
+		x: 0,
+		y: 0,
+		button: 'left',
+	});
+});
+
+test('bubbles onClick through parent elements', t => {
+	const stdout = createStdout();
+	const stdin = createStdin();
+	const childCurrentTargets: unknown[] = [];
+	const parentCurrentTargets: unknown[] = [];
+	const onParentClick = spy((event: ClickEvent) => {
+		parentCurrentTargets.push(event.currentTarget);
+	});
+
+	const onChildClick = spy((event: ClickEvent) => {
+		childCurrentTargets.push(event.currentTarget);
+	});
+
+	render(
+		<Box onClick={onParentClick}>
+			<Text onClick={onChildClick}>Click</Text>
+		</Box>,
+		{
+			stdout,
+			stdin,
+			debug: true,
+			interactive: true,
+			alternateScreen: true,
+		},
+	);
+
+	emitReadable(stdin, '\u001B[<0;1;1M');
+
+	t.is(onChildClick.callCount, 1);
+	t.is(onParentClick.callCount, 1);
+	t.is(
+		onChildClick.firstCall.args[0].target,
+		onParentClick.firstCall.args[0].target,
+	);
+	t.is(childCurrentTargets[0], onChildClick.firstCall.args[0].target);
+	t.is(
+		parentCurrentTargets[0],
+		onChildClick.firstCall.args[0].target.parentNode,
+	);
+});
+
+test('stopPropagation prevents parent onClick handlers', t => {
+	const stdout = createStdout();
+	const stdin = createStdin();
+	const onParentClick = spy();
+	const onChildClick = spy((event: ClickEvent) => {
+		event.stopPropagation();
+	});
+
+	render(
+		<Box onClick={onParentClick}>
+			<Text onClick={onChildClick}>Click</Text>
+		</Box>,
+		{
+			stdout,
+			stdin,
+			debug: true,
+			interactive: true,
+			alternateScreen: true,
+		},
+	);
+
+	emitReadable(stdin, '\u001B[<0;1;1M');
+
+	t.is(onChildClick.callCount, 1);
+	t.true(onParentClick.notCalled);
+});
+
+test('dispatches onClick to topmost overlapping element only', t => {
+	const stdout = createStdout();
+	const stdin = createStdin();
+	const onBottomClick = spy();
+	const onTopClick = spy();
+
+	render(
+		<Box width={10} height={2}>
+			<Box position="absolute" left={0} top={0} onClick={onBottomClick}>
+				<Text>Bottom</Text>
+			</Box>
+
+			<Box position="absolute" left={0} top={0} onClick={onTopClick}>
+				<Text>Top</Text>
+			</Box>
+		</Box>,
+		{
+			stdout,
+			stdin,
+			debug: true,
+			interactive: true,
+			alternateScreen: true,
+		},
+	);
+
+	emitReadable(stdin, '\u001B[<0;1;1M');
+
+	t.true(onBottomClick.notCalled);
+	t.is(onTopClick.callCount, 1);
+});
+
+test('does not enable onClick mouse tracking outside alternate screen', t => {
+	const stdout = createStdout();
+	const stdin = createStdin();
+	const onClick = spy();
+
+	render(<Text onClick={onClick}>Click</Text>, {
+		stdout,
+		stdin,
+		debug: true,
+		interactive: true,
+	});
+
+	emitReadable(stdin, '\u001B[<0;1;1M');
+
+	t.true(onClick.notCalled);
+	t.false(stdout.getWrites().join('').includes('\u001B[?1000h\u001B[?1006h'));
+});
+
+test('does not treat SGR wheel events as onClick', t => {
+	const stdout = createStdout();
+	const stdin = createStdin();
+	const onClick = spy();
+
+	render(<Text onClick={onClick}>Click</Text>, {
+		stdout,
+		stdin,
+		debug: true,
+		interactive: true,
+		alternateScreen: true,
+	});
+
+	emitReadable(stdin, '\u001B[<64;1;1M');
+
+	t.true(onClick.notCalled);
+});
+
+test('disables mouse tracking when no onClick handlers remain', t => {
+	const stdout = createStdout();
+	const stdin = createStdin();
+
+	const {rerender} = render(<Text onClick={() => {}}>Click</Text>, {
+		stdout,
+		stdin,
+		debug: true,
+		interactive: true,
+		alternateScreen: true,
+	});
+
+	rerender(<Text>Click</Text>);
+
+	const writes = stdout.getWrites().join('');
+
+	t.true(writes.includes('\u001B[?1000h\u001B[?1006h'));
+	t.true(writes.includes('\u001B[?1000l\u001B[?1006l'));
 });
 
 // Concurrent mode tests
